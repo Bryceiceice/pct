@@ -21,7 +21,8 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.Arrays;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 /**
  * Gathers informations from r-code, as the RCODE-INFO system handle could provide. This class is
@@ -36,6 +37,7 @@ public class RCodeInfo {
     private static final int MAGIC2 = 0x09D3CE56; // Bytes swapped
 
     private static final short HEADER_SIZE = 68;
+    private static final short HEADER_SIZE_V12 = 84;
 
     private boolean swapped;
     private int version;
@@ -48,7 +50,6 @@ public class RCodeInfo {
     private InputStream input;
     private int segmentTableSize;
     private long signatureSize;
-    private String debugListingFile;
 
     public RCodeInfo(File file) throws InvalidRCodeException, IOException {
         this(new BufferedInputStream(new FileInputStream(file), 65536));
@@ -67,7 +68,6 @@ public class RCodeInfo {
         this.input = input;
         this.input.mark(0);
         processFile();
-        readDebugListing();
         input.close();
     }
 
@@ -110,35 +110,6 @@ public class RCodeInfo {
         return sixty_four_bits;
     }
 
-    public String getDebugListingFile() {
-        return debugListingFile;
-    }
-
-    private void readDebugListing() throws IOException {
-        byte[] buf1 = new byte[1024], buf2 = new byte[2048];
-        input.reset();
-        // Make sure we have at least 1024 bytes in buf2
-        while (input.read(buf1) == 1024) {
-            buf2 = Arrays.copyOf(buf1, buf1.length * 2);
-            Arrays.fill(buf1, (byte) 0); 
-        }
-        for (int zz = 0; zz < buf1.length; zz++) {
-            buf2[1024 + zz] = buf1[zz];
-        }
-        int last00 = -1, first02 = -1;
-        // Search backwards for last 0x00 and first 0x02
-        for (int zz = 2047; zz >= 0; zz--) {
-            if ((first02 == -1) && (buf2[zz] == 0x00)) {
-                last00 = zz;
-            }
-            if ((first02 == -1) && (buf2[zz] == 0x02)) {
-                first02 = zz;
-                break;
-            }
-        }
-        debugListingFile = new String(Arrays.copyOfRange(buf2, first02 + 1, last00));
-    }
-
     private void processFile() throws InvalidRCodeException, IOException {
         long magic = readUnsignedInt(input, 0, false);
         if (magic == MAGIC1) {
@@ -150,10 +121,12 @@ public class RCodeInfo {
             throw new InvalidRCodeException("Can't find magic number");
         }
 
-        this.version = readUnsignedShort(input, 14, swapped);
+        this.version = Math.abs(readShort(input, 14, swapped));
         this.sixty_four_bits = ((version & 0x4000) != 0);
 
-        if ((version & 0x3FFF) >= 1100) {
+        if ((version & 0x3FFF) >= 1200) {
+            processV12(input, swapped);
+        } else if ((version & 0x3FFF) >= 1100) {
             processV11(input, swapped);
         } else if ((version & 0x3FFF) > 1000) {
             processV10(input, swapped);
@@ -161,17 +134,20 @@ public class RCodeInfo {
             processV9(input, swapped);
     }
 
+    void processV12(InputStream fc, boolean swapped) throws IOException {
+        timeStamp = readUnsignedInt(fc, 4, swapped);
+        int md5Offset = readUnsignedShort(fc, 10, swapped);
+        segmentTableSize = readUnsignedShort(fc, 0x1E, swapped);
+        signatureSize = readUnsignedInt(fc, 56, swapped);
+        crc = readUnsignedShort(fc, HEADER_SIZE_V12 + segmentTableSize + signatureSize + 0xA4, swapped);
+        md5 = bufferToHex(fc, HEADER_SIZE_V12 + segmentTableSize + (int) signatureSize + md5Offset, 16);
+    }
+
     void processV11(InputStream fc, boolean swapped) throws IOException {
         timeStamp = readUnsignedInt(fc, 4, swapped);
         int md5Offset = readUnsignedShort(fc, 10, swapped);
-        // maxFileNumber = readUnsignedShort(fc, 10, swapped);
-        // compilerVersion = readUnsignedShort(fc, 12, swapped);
-        // demoVersion = readByte(fc, 25);
         segmentTableSize = readUnsignedShort(fc, 0x1E, swapped);
-        // serialRestriction = readUnsignedInt(fc, 28, swapped);
-        // expirationDate = readUnsignedInt(fc, 32, swapped);
         signatureSize = readUnsignedInt(fc, 56, swapped);
-        // typeBlockSize = readUnsignedInt(fc, 60, swapped);
         rCodeSize = readUnsignedInt(fc, 64, swapped);
         crc = readUnsignedShort(fc, HEADER_SIZE + segmentTableSize + signatureSize + 0xA4, swapped);
         md5 = bufferToHex(fc, HEADER_SIZE + segmentTableSize + (int) signatureSize + md5Offset, 16);
@@ -196,6 +172,17 @@ public class RCodeInfo {
         crc = readUnsignedShort(fc, HEADER_SIZE + segmentTableSize + (int) signatureSize + 0x46,
                 swapped);
         md5 = bufferToHex(fc, HEADER_SIZE + segmentTableSize + (int) signatureSize + md5Offset, 16);
+    }
+
+    private static short readShort(InputStream input, long pos, boolean swapped)
+            throws IOException {
+        byte[] buf = new byte[2];
+        input.reset();
+        input.skip(pos);
+        input.read(buf);
+
+        return ByteBuffer.wrap(buf).order(swapped ? ByteOrder.LITTLE_ENDIAN : ByteOrder.BIG_ENDIAN)
+                .getShort();
     }
 
     private static int readUnsignedShort(InputStream input, long pos, boolean swapped)
@@ -247,20 +234,6 @@ public class RCodeInfo {
         public InvalidRCodeException(String s) {
             super(s);
         }
-    }
-
-    public static void main(String[] args) throws Exception {
-        RCodeInfo rci = new RCodeInfo(new File("C:\\Users\\gquerret\\Downloads\\catalogue.r"));
-        System.out.println("CRC : " + rci.getCRC());
-        System.out.println("MD5 : " + rci.getMD5());
-        System.out.println("Val : " + rci.getVersion());
-        System.out.println("64 bits : " + ((rci.getVersion() & 0x4000) != 0));
-        
-        rci = new RCodeInfo(new File("C:\\Users\\gquerret\\Downloads\\catalogueProd.r"));
-        System.out.println("CRC : " + rci.getCRC());
-        System.out.println("MD5 : " + rci.getMD5());
-        System.out.println("Val : " + rci.getVersion());
-        System.out.println("64 bits : " + ((rci.getVersion() & 0x4000) != 0));
     }
 
 }

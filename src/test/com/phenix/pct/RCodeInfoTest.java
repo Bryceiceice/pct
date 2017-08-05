@@ -36,7 +36,7 @@ import com.phenix.pct.RCodeInfo.InvalidRCodeException;
 public class RCodeInfoTest extends BuildFileTestNg {
 
     /**
-     * Compares CRC using RCodeInfo and RCODE-INFO:CRC-VALUE
+     * Compares CRC and MD5 using RCodeInfo and RCODE-INFO:CRC-VALUE
      */
     @Test(groups = { "v10" })
     public void test1() throws IOException, InvalidRCodeException {
